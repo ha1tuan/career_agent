@@ -1,0 +1,21 @@
+# Loại bỏ các thư mục môi trường ảo và cache của Python
+
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Loại bỏ các thư mục của git và IDE
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.claude/
+
+# Loại bỏ các file log và dữ liệu tạm thời
+*.log
+.env
+db.sqlite3

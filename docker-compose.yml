@@ -1,0 +1,86 @@
+services:
+  # ==========================================
+  # 1. DỊCH VỤ DATABASE (PostgreSQL)
+  # ==========================================
+  db:
+    image: postgres:15-alpine
+    container_name: career_db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=100903 # Hãy thay đổi mật khẩu mạnh hơn khi deploy thực tế
+      - POSTGRES_DB=career_db
+    volumes:
+      # Ánh xạ tên volume để lưu trữ dữ liệu vĩnh viễn (tránh mất mát khi container restart/stop)
+      - postgres_data:/var/lib/postgresql/data
+    # Không expose cổng ra ngoài (không khai báo ports) để đảm bảo bảo mật tuyệt đối cho DB
+    restart: unless-stopped
+    healthcheck:
+      # Kiểm tra trạng thái sẵn sàng của PostgreSQL trước khi khởi chạy Backend
+      test: ["CMD-SHELL", "pg_isready -U postgres -d career_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - career_network
+
+  # ==========================================
+  # 2. DỊCH VỤ REDIS
+  # ==========================================
+  redis:
+    image: redis:7-alpine
+    container_name: career_redis
+    restart: unless-stopped
+    networks:
+      - career_network
+
+  # ==========================================
+  # 3. DỊCH VỤ BACKEND (FastAPI)
+  # ==========================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: career_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/uploads:/app/uploads # Lưu trữ CV tải lên từ Host
+    environment:
+      # URL kết nối DB nội bộ sử dụng tên service "db" trong mạng Docker
+      - DATABASE_URL=postgresql+asyncpg://postgres:100903@db:5432/career_db
+      # URL kết nối Redis nội bộ sử dụng tên service "redis" trong mạng Docker
+      - REDIS_URL=redis://redis:6379
+    env_file:
+      - ./backend/.env # Nạp thêm các cấu hình bảo mật khác từ file .env hiện tại
+    depends_on:
+      db:
+        condition: service_healthy # Chỉ khởi động Backend khi DB đã hoàn toàn sẵn sàng nhận kết nối
+      redis:
+        condition: service_started # Đảm bảo Redis khởi động trước Backend
+    restart: unless-stopped
+    networks:
+      - career_network
+
+  # ==========================================
+  # 3. DỊCH VỤ FRONTEND (ReactJS + Nginx)
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: career_frontend
+    ports:
+      - "3000:80" # Ánh xạ cổng 3000 của Host vào cổng 80 của Nginx (Stage 2)
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - career_network
+
+# Khai báo volume lưu trữ dữ liệu DB và mạng nội bộ Bridge bảo mật
+volumes:
+  postgres_data:
+
+networks:
+  career_network:
+    driver: bridge

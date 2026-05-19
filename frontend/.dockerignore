@@ -1,0 +1,25 @@
+# Loại bỏ thư mục dependencies cục bộ và thư mục build tĩnh
+node_modules/
+dist/
+build/
+.npm/
+
+# Loại bỏ các thư mục git và IDE
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.claude/
+
+# Loại bỏ các file môi trường cục bộ
+.env
+.env.local
+.env.development
+.env.production
+
+# Loại bỏ logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
