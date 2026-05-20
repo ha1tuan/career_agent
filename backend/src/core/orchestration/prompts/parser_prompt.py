@@ -28,6 +28,13 @@ Chỉ trả về JSON thuần, không markdown, không giải thích:
 Nguyên tắc:
 - Thiếu thông tin → để "" hoặc []
 - Không bịa thêm thông tin không có trong CV
-- target_position dựa trên kinh nghiệm thực tế
 - Trả lời bằng tiếng Việt
+- target_position rules:
+    - Phải là tên vị trí tuyển dụng chuẩn
+    - Ví dụ: "Backend Developer", "AI Engineer",
+      "Python Developer", "Software Engineer"
+    - Nếu CV ghi "AI Agentic" → chuẩn hóa thành
+      "AI Engineer"
+    - Không được để tên công nghệ làm tên vị trí
+    - Tối đa 4 từ
 """

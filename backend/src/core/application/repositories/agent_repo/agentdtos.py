@@ -50,3 +50,4 @@ class AgentSessionResponse(BaseModel):
     interview_summary:   Optional[dict] = None
     error:               Optional[str]  = None
     progress:            Optional[str]  = None
+    progress_step:       Optional[str]  = None

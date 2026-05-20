@@ -16,7 +16,7 @@ def build_search_query(cv_data: dict) -> str:
     skills    = cv_data.get("skills", [])[:3]
     skill_str = " ".join(skills)
     
-    return f"{position} {skill_str} tuyển dụng 2026"
+    return f"Tìm việc {position}"
 # 2. Bổ sung các trang list của Glassdoor, TopCV, LinkedIn vào blacklist
 AGGREGATOR_DOMAINS = {
     "vietnamworks.com/search",

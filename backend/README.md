@@ -1,649 +1,482 @@
 # Career Agent Backend
 
-Backend cho hệ thống Career Agent — sử dụng **FastAPI**, **LangGraph**, **PostgreSQL** và **Redis**. Kiến trúc Clean Architecture, luồng xử lý đa bước với HITL (Human-in-the-Loop) và SSE streaming.
+Backend cho hệ thống hỗ trợ tìm kiếm việc làm và luyện phỏng vấn tự động bằng AI, xây dựng trên **FastAPI** + **LangGraph** + **PostgreSQL** + **Redis**.
 
 ---
 
 ## Mục lục
 
-1. [Kiến trúc hệ thống](#1-kiến-trúc-hệ-thống)
-2. [Cấu trúc thư mục](#2-cấu-trúc-thư-mục)
-3. [Agent Nodes](#3-agent-nodes)
-4. [Luồng chạy API chi tiết](#4-luồng-chạy-api-chi-tiết)
-5. [API Endpoints](#5-api-endpoints)
-6. [Cài đặt & Chạy ứng dụng](#6-cài-đặt--chạy-ứng-dụng)
-7. [Database & Migration](#7-database--migration)
+1. [Chức năng hệ thống](#1-chức-năng-hệ-thống)
+2. [Kiến trúc project](#2-kiến-trúc-project)
+3. [LLM Graph & Luồng chạy](#3-llm-graph--luồng-chạy)
+4. [API Endpoints](#4-api-endpoints)
+5. [Cài đặt & Chạy](#5-cài-đặt--chạy)
 
 ---
 
-## 1. Kiến trúc hệ thống
+## 1. Chức năng hệ thống
 
-### 1.1 Tổng quan tầng
+### Quản lý tài khoản
+Đăng ký, đăng nhập, làm mới token (JWT HS256 + bcrypt). Mỗi người dùng có không gian làm việc riêng biệt với lịch sử được lưu vĩnh viễn.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Presentation Layer                       │
-│   FastAPI Controllers (agent, interview, cv, auth)          │
-│   SSE StreamingResponse  │  REST JSON Endpoints             │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                    Application Layer                         │
-│   Interfaces (IAgentRepository, IInterviewRepository, ...)  │
-│   DTOs / Request-Response models (Pydantic)                 │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                  Infrastructure Layer                        │
-│   AgentRepository  │  InterviewRepository  │  CVRepository  │
-│   SessionService   │  LLMService           │  StreamService │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                  Orchestration Layer (LangGraph)             │
-│   Main Graph: job_finder → company_researcher → interviewer │
-│   Interview Sub-graph: generate → ask → save_next → eval    │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        ▼                  ▼                  ▼
-   PostgreSQL           Redis             External APIs
-  (SQLAlchemy)     (session metadata)  (Gemini, Tavily)
-  (LangGraph                           (Ollama fallback)
-   Checkpointer)
-```
+### Tải & Phân tích CV
+Upload file PDF hoặc DOCX, hệ thống tự động trích xuất văn bản và dùng LLM để cấu trúc hóa thành: thông tin cá nhân, học vấn, kinh nghiệm, kỹ năng, vị trí mong muốn. Phát hiện CV trùng lặp qua SHA-256 hash — cho phép tái sử dụng hoặc tạo mới.
 
-### 1.2 Nguyên tắc quản lý state
+### Tìm kiếm việc làm bằng AI (Job Finder)
+Dựa trên dữ liệu CV, hệ thống tự động:
+- Tìm kiếm job phù hợp trên mạng qua Tavily Search
+- Trích xuất chi tiết từng job posting (mô tả, yêu cầu, phúc lợi, lương)
+- LLM chấm điểm mức độ phù hợp (`match_score` 0–100) và lý do
 
-| Nơi lưu | Lưu gì | Mục đích |
-|---------|--------|---------|
-| **PostgresSaver** (LangGraph) | Toàn bộ `AgentState` và `InterviewState` | Nguồn sự thật duy nhất — cho phép resume sau crash/F5 |
-| **Redis** | `{ user_id, cv_id }` metadata | Kiểm tra session còn sống (TTL 24h) |
-| **PostgreSQL** | `InterviewHistoryItem`, `CVDocument`, `User` | Lịch sử dài hạn |
+### Nghiên cứu công ty (Company Researcher)
+Sau khi người dùng chọn một job, hệ thống tự động thu thập thông tin về công ty đó: văn hóa làm việc, tech stack, sản phẩm, quy trình phỏng vấn, ưu/nhược điểm.
 
-> **Quy tắc:** Redis KHÔNG lưu `job_results`, `questions`, `cv_data`. Mọi state đọc từ `graph.get_state()`.
+### Luyện phỏng vấn (AI Interviewer)
+Tổ chức buổi phỏng vấn mô phỏng 5 câu hỏi được tạo tùy biến theo vị trí và công ty:
+- Xoay vòng các loại câu hỏi: opening → technical → behavior → culture_fit
+- Điều chỉnh độ khó dựa trên chất lượng câu trả lời trước
+- Chấm điểm từng câu (0–10) và đưa ra đánh giá tổng thể cuối buổi
 
-### 1.3 Sơ đồ luồng dữ liệu
-
-```
-POST /start
-    └─► PostgresSaver ◄─── aupdate_state(initial_state)
-    └─► Redis ◄──────────── save_metadata(user_id, cv_id)
-
-GET /stream  ─► graph.astream_events(None, config)
-                    └─► Tavily API ─► Gemini API ─► PostgresSaver (auto-checkpoint)
-                    └─► SSE events ─────────────────────────────────────► FE
-
-POST /resume ─► graph.aupdate_state(HITL input)  ← không chạy graph
-
-GET /session ─► graph.get_state() + interview_graph.get_state() ─► merge ─► FE
-```
+### Lịch sử & Resume
+Toàn bộ lịch sử tìm việc và phỏng vấn được lưu trữ dài hạn. Hỗ trợ tiếp tục (resume) phiên làm việc bị gián đoạn.
 
 ---
 
-## 2. Cấu trúc thư mục
+## 2. Kiến trúc project
+
+Project tổ chức theo **Clean Architecture** với 5 layer tách biệt:
 
 ```
 src/
-├── main.py                          # FastAPI entry point, lifespan setup
-├── api/
-│   ├── config/
-│   │   ├── settings.py              # Pydantic settings từ .env
-│   │   ├── redis_client.py          # Redis connection pool (singleton)
-│   │   ├── checkpointer.py          # AsyncPostgresSaver setup
-│   │   ├── security.py              # JWT (HS256), bcrypt
-│   │   └── exceptions.py            # CareerAgentException
-│   └── controller/
-│       ├── agent.py                 # /agent/start, /stream, /resume, /session
-│       ├── interview.py             # /interview/answer, /result, /history
-│       ├── cv.py                    # /cv/upload
-│       └── auth.py                  # /auth/register, /login, /refresh
+├── api/                         ← API Layer
+│   ├── config/                  # Cấu hình, bảo mật, kết nối DB/Redis
+│   └── controller/              # HTTP route handlers
 │
-├── core/
-│   ├── domain/
-│   │   └── models.py                # SQLAlchemy: User, CVDocument, InterviewHistoryItem
-│   │
-│   ├── application/
-│   │   ├── repositories/            # Interfaces + DTOs
-│   │   │   ├── agent_repo/          # IAgentRepository, agentdtos.py
-│   │   │   ├── interview_repo/      # IInterviewRepository, interviewdtos.py
-│   │   │   ├── cv_repo/
-│   │   │   └── user_repo/
-│   │   └── services/                # Service interfaces
-│   │       ├── session_service/     # ISessionService
-│   │       ├── llm_service/         # ILLMService
-│   │       └── cv_service/          # ICVService
-│   │
-│   ├── infrastructure/
-│   │   ├── persistence/session.py   # AsyncSessionFactory (SQLAlchemy)
-│   │   ├── repositories/            # Concrete implementations
-│   │   │   ├── agent_repo.py
-│   │   │   ├── interview_repo.py
-│   │   │   ├── cv_repo.py
-│   │   │   └── user_repo.py
-│   │   └── services/
-│   │       ├── session_service.py   # Redis metadata storage
-│   │       ├── llm_service.py       # Gemini / Ollama wrapper
-│   │       ├── cv_service.py        # PDF/DOCX extraction
-│   │       └── stream_service.py    # SSE generator (stream_graph_events)
-│   │
-│   └── orchestration/
-│       ├── graphs/
-│       │   ├── graph.py             # Main agent graph
-│       │   └── interview_graph.py   # Interview sub-graph
-│       ├── nodes/
-│       │   ├── job_finder.py        # Tavily search + Gemini parse
-│       │   ├── company_researcher.py# Tavily + Gemini research
-│       │   └── interview_nodes.py   # generate, ask, save_next, eval_all, bridge
-│       ├── state/
-│       │   ├── state.py             # AgentState TypedDict
-│       │   └── interview_state.py   # InterviewState, QAPair, QAEvaluated
-│       └── prompts/                 # LLM prompt templates
-│
-└── migrations/                      # Alembic migrations
+└── core/
+    ├── domain/                  ← Domain Layer
+    │   └── models.py            # SQLAlchemy ORM models
+    │
+    ├── application/             ← Application Layer (Interfaces)
+    │   ├── repositories/        # Abstract repository interfaces + DTOs
+    │   └── services/            # Abstract service interfaces
+    │
+    ├── infrastructure/          ← Infrastructure Layer (Implementations)
+    │   ├── persistence/         # SQLAlchemy session factory
+    │   ├── repositories/        # SQL implementations
+    │   └── services/            # LLM, CV, Session service implementations
+    │
+    └── orchestration/           ← Orchestration Layer (LangGraph)
+        ├── graphs/              # Định nghĩa workflow (nodes + edges)
+        ├── nodes/               # Logic xử lý từng bước AI
+        ├── prompts/             # LLM prompt templates
+        ├── state/               # TypedDict state definitions
+        ├── session/             # Graph runner + event system
+        └── utils/               # Helper utilities
 ```
+
+### Mô tả từng Layer
+
+#### API Layer (`src/api/`)
+Tiếp nhận HTTP request, xác thực JWT, chuyển đổi Request/Response DTO, sau đó ủy thác cho các layer dưới. Không chứa business logic.
+
+Các thành phần chính:
+- `config/settings.py` — Pydantic Settings đọc từ `.env`
+- `config/security.py` — Tạo/xác minh JWT, bcrypt password hashing
+- `config/checkpointer.py` — Khởi tạo `AsyncPostgresSaver` cho LangGraph
+- `config/redis_client.py` — Connection pool Redis
+- `controller/` — 5 controller: auth, cv, agent, interview, history
+
+#### Domain Layer (`src/core/domain/`)
+Định nghĩa các ORM model ánh xạ với database. Không chứa logic, chỉ là cấu trúc dữ liệu:
+
+| Model | Mô tả |
+|---|---|
+| `User` | Tài khoản người dùng |
+| `CVDocument` | CV đã upload (raw text + structured JSON + file hash) |
+| `AgentSession` | Phiên làm việc (job results, company research, interview summary) |
+| `InterviewQAPair` | Từng cặp Q&A trong buổi phỏng vấn |
+
+#### Application Layer (`src/core/application/`)
+Định nghĩa các **abstract interface** — hợp đồng giữa API layer và Infrastructure layer. Không có implementation cụ thể, cho phép thay thế dễ dàng (ví dụ: đổi từ Gemini sang Ollama mà không cần sửa API layer).
+
+Các interface chính:
+- `IUserRepository`, `ICVRepository`, `IAgentRepository`, `IInterviewRepository`, `ISessionHistoryRepository`
+- `ILLMService` — `generate(prompt) → str`, `stream(prompt) → AsyncIterator`
+- `ICVService` — trích xuất text, hash, lưu file
+- `ISessionService` — quản lý session metadata trên Redis
+
+#### Infrastructure Layer (`src/core/infrastructure/`)
+Triển khai cụ thể các interface. Đây là nơi chứa code giao tiếp với external systems:
+
+- **Repositories**: Truy vấn PostgreSQL bằng SQLAlchemy async
+- **LLM Service**: `GeminiLLMService` (Gemini API) và `OllamaLLMService` (local), switch qua `LLM_PROVIDER` env var
+- **CV Service**: Trích xuất text từ PDF/DOCX, tính SHA-256 hash, lưu file
+- **Session Service**: Lưu/đọc session metadata trên Redis (TTL 24h), theo dõi tiến trình real-time
+
+#### Orchestration Layer (`src/core/orchestration/`)
+Định nghĩa và chạy **LangGraph workflow**. Quản lý state AI agent, điều phối các node xử lý, phát event lưu trữ sau mỗi bước.
+
+- `graphs/` — Định nghĩa cấu trúc graph (nodes, edges, điều kiện rẽ nhánh, interrupt points)
+- `nodes/` — Logic xử lý tại mỗi bước (gọi Tavily, gọi LLM, parse JSON)
+- `state/` — `AgentState` và `InterviewState` TypedDict
+- `session/graph_runner.py` — Chạy graph trong background, emit events vào DB/Redis
 
 ---
 
-## 3. Agent Nodes
+## 3. LLM Graph & Luồng chạy
 
-### 3.1 Main Graph
+Hệ thống dùng hai LangGraph graph: **Main Graph** và **Interview Sub-Graph** lồng nhau.
+
+State được checkpoint vào PostgreSQL sau mỗi node — cho phép resume chính xác từ điểm bị gián đoạn, không cần chạy lại từ đầu.
+
+---
+
+### Main Graph
 
 ```
 [START]
    │
    ▼
-job_finder ──(interrupt_after)──► [HITL #1: user chọn công ty]
-   │                                        │
-   │                              POST /resume {company_name}
-   │                                        │
-   ▼                                        ▼
-company_researcher ──(interrupt_after)──► [HITL #2: user chọn hành động]
-   │                                        │
-   │                              POST /resume {is_interview}
-   │                                        │
-   ├─ is_interview=false ──────────────► [END]
-   │
-   └─ is_interview=true
-          │
-          ▼
-      interviewer ──────────────────────► [END]
+┌─────────────┐
+│  job_finder │  ← Tìm và chấm điểm việc làm phù hợp
+└──────┬──────┘
+       │
+       │  ── INTERRUPT ① ──────────────────────────────────────────────
+       │     Người dùng xem danh sách job và chọn công ty muốn ứng tuyển
+       │  ── POST /agent/resume { company_name, job_selected } ─────────
+       │
+       ▼
+┌──────────────────────┐
+│  company_researcher  │  ← Research thông tin công ty được chọn
+└──────────┬───────────┘
+           │
+           │  ── INTERRUPT ② ──────────────────────────────────────────
+           │     Người dùng quyết định có muốn luyện phỏng vấn không
+           │  ── POST /agent/resume { is_interview: true|false } ────────
+           │
+           ▼
+     [route_action]
+           │
+    ┌──────┴──────┐
+    │             │
+is_interview   else
+    │             │
+    ▼             ▼
+┌──────────┐   [END]
+│interviewer│ ← Khởi động interview sub-graph
+└──────────┘
+    │
+    ▼
+  [END]
 ```
 
----
+#### Node `job_finder`
 
-#### Node 1 — `job_finder_node`
+**File:** [src/core/orchestration/nodes/job_finder.py](src/core/orchestration/nodes/job_finder.py)
 
-**File:** `src/core/orchestration/nodes/job_finder.py`
-
-**Mục đích:** Tìm kiếm việc làm phù hợp với CV của ứng viên.
+Tìm kiếm và xếp hạng việc làm phù hợp với CV của ứng viên.
 
 ```
 Input:  cv_data { target_position, skills, experience, education }
-Output: job_results [ JobResult... ] — sorted by match_score DESC
 
-Luồng:
-  1. Xây search query từ cv_data
-       → "{target_position} {top 3 skills} tuyển dụng 2026"
+Xử lý:
+  1. Xây query từ cv_data: "{position} {top 3 skills} tuyển dụng 2026"
+  2. Tavily.search(query, max_results=10)
+       → Lọc bỏ các trang aggregator (trang danh sách job, search pages)
+  3. Tavily.extract(top 5 URLs)
+       → Lấy full content từng trang job posting cụ thể
+  4. Gọi LLM với JOB_FINDER_PROMPT:
+       → Extract: title, company, salary, location, requirements, benefits, ...
+       → Tính match_score (0–100) và match_reason dựa vào CV
+       → is_suggested = true nếu score ≥ 70
+  5. Sắp xếp jobs theo match_score giảm dần
 
-  2. Tavily.search(query, max_results=10, include_domains=[topcv, itviec, linkedin])
-       → Lọc bỏ aggregator URLs (trang tổng hợp như /search, /tim-viec-lam)
-
-  3. Tavily.extract(urls[:5])
-       → Lấy full content từng trang job (tối đa 2000 chars/job)
-       → Fallback về search.content nếu extract lỗi
-
-  4. Gọi Gemini với JOB_FINDER_PROMPT
-       → Extract: title, company, salary, location, requirements, benefits
-       → Tính match_score (0-100) và match_reason dựa vào CV
-
-  5. Sort jobs by match_score, set current_step = "jobs_found"
-     → Graph bị interrupt ở đây (interrupt_after=["job_finder"])
+Output: job_results[] — danh sách job đã xếp hạng
+        current_step = "jobs_found"
 ```
 
-**Cache guard:** Nếu `current_step` đã là `jobs_found/job_selected/companies_researched` → skip, không chạy lại.
+**Cache guard:** Nếu `current_step` đã là `jobs_found` hoặc sau đó → bỏ qua, không chạy lại.
 
 ---
 
-#### Node 2 — `company_researcher_node`
+#### Node `company_researcher`
 
-**File:** `src/core/orchestration/nodes/company_researcher.py`
+**File:** [src/core/orchestration/nodes/company_researcher.py](src/core/orchestration/nodes/company_researcher.py)
 
-**Mục đích:** Research văn hóa, tech stack, quy trình phỏng vấn của công ty được chọn.
+Thu thập và cấu trúc hóa thông tin về công ty được chọn.
 
 ```
-Input:  company_name (từ HITL #1) hoặc job_selected.company
-        cv_data { target_position, skills }
-Output: company_research { culture, tech_stack, interview_process, pros_cons, ... }
-        job_selected (resolve từ job_results nếu chưa có)
+Input:  company_name (từ HITL #1), job_results
 
-Luồng:
-  1. Xác định company_name:
-       company_name = state["company_name"] OR state["job_selected"]["company"]
+Xử lý:
+  1. Xác định company_name từ state hoặc job_selected
+  2. Resolve job_selected từ job_results nếu chưa có
+  3. Tavily.search("{company} review culture interview tech stack")
+       → max_results=5, không tìm trang tuyển dụng
+  4. Gọi LLM với COMPANY_RESEARCH_PROMPT:
+       → Parse: industry, size, culture, products[],
+                tech_stack[], interview_process[], pros_cons
 
-  2. Nếu job_selected chưa có → tìm trong job_results by company_name
-
-  3. Tavily.search("{company} review culture interview process tech stack Vietnam IT")
-       → max_results=5, ghép content (~1500 chars)
-
-  4. Gọi Gemini với COMPANY_RESEARCH_PROMPT
-       → Parse JSON: industry, size, culture, products, tech_stack,
-                     interview_process, pros_cons
-
-  5. Trả về company_research, job_selected, current_step = "companies_researched"
-     → Graph bị interrupt (interrupt_after=["company_researcher"])
+Output: company_research { ... }
+        job_selected (nếu chưa được set)
+        current_step = "companies_researched"
 ```
 
 ---
 
-#### Node 3 — `interviewer_node` (Bridge)
+#### Node `interviewer` (Bridge)
 
-**File:** `src/core/orchestration/nodes/interview_nodes.py`
+**File:** [src/core/orchestration/nodes/interview_nodes.py](src/core/orchestration/nodes/interview_nodes.py)
 
-**Mục đích:** Cầu nối main graph → interview sub-graph.
+Cầu nối giữa Main Graph và Interview Sub-Graph.
 
 ```
-Input:  cv_data, job_selected, company_research, session_id từ AgentState
-Output: current_step = "interviewing"
+Input:  cv_data, job_selected, company_research từ AgentState
 
-Luồng:
-  1. Khởi tạo InterviewState { cv_data, selected_job, company_research,
-                                session_id, user_id, cv_id, max_questions=5 }
-
-  2. interview_graph.astream(initial_state, {thread_id: "{session_id}_interview"})
-       → Chạy đến interrupt đầu tiên (sau ask_question)
-       → generate_first_question_node chạy → ask_question_node gọi interrupt()
-
-  3. Sub-graph dừng, main graph tiếp tục kết thúc
-     → current_step = "interviewing"
+Xử lý:
+  1. Khởi tạo InterviewState với context từ job và company
+  2. Chạy interview_graph đến interrupt đầu tiên
+       → generate_first_question chạy xong
+       → ask_question gọi interrupt() → sub-graph dừng
+  3. Trả về current_step = "interviewing"
 ```
 
 ---
 
-### 3.2 Interview Sub-graph
+### Interview Sub-Graph
 
 ```
 [START]
    │
    ▼
-generate_first ──────────────────────────────────────┐
-   │                                                 │
-   ▼                                                 │
-ask_question ──(interrupt_after)──► [HITL: user trả lời]
-   │                                        │
-   │                           POST /interview/answer {answer}
-   │                                        │
-   ▼                                        ▼
-save_and_next
-   │
-   ├─ is_done=false ──────────────► ask_question (loop)
-   │
-   └─ is_done=true
-          │
-          ▼
-      evaluate_all ──────────────► [END]
+┌──────────────────┐
+│ generate_first   │  ← LLM tạo câu hỏi opening phù hợp với vị trí/công ty
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐ ◄─────────────────────────────────┐
+│   ask_question   │  ← INTERRUPT: chờ người dùng trả lời │
+└────────┬─────────┘                                   │
+         │                                             │
+         │  ── POST /agent/interview/answer { answer } │
+         │                                             │
+         ▼                                             │
+┌──────────────────┐                                   │
+│  save_and_next   │  ← Lưu Q&A, tạo câu hỏi tiếp     │
+└────────┬─────────┘                                   │
+         │                                             │
+    ┌────┴─────┐                                       │
+    │          │                                       │
+!is_done    is_done                                    │
+    │          │                                       │
+    └──────────┼───────────────────────────────────────┘
+               │
+               ▼
+    ┌──────────────────┐
+    │   evaluate_all   │  ← LLM chấm điểm toàn bộ 5 câu trong 1 lần gọi
+    └────────┬─────────┘
+             │
+             ▼
+           [END]
 ```
 
----
-
-#### Sub-Node 1 — `generate_first_question_node`
-
-**Mục đích:** Tạo câu hỏi khai mạc (round = "opening").
+#### Sub-Node `generate_first_question`
 
 ```
-Input:  cv_data, selected_job
+Input:  cv_data.target_position, cv_data.skills, selected_job.title, company_research.company_name
+
+Xử lý:
+  → Gọi LLM với FIRST_QUESTION_PROMPT (temperature=0.6)
+  → Parse JSON: { round: "opening", question: "..." }
+
 Output: current_question, current_round="opening", current_index=0
-
-Luồng:
-  → Gọi Gemini với FIRST_QUESTION_PROMPT
-     format: company_name, target_position, skills, job_title
-  → Parse { question, round } từ JSON response
 ```
 
----
-
-#### Sub-Node 2 — `ask_question_node`
-
-**Mục đích:** Hiển thị câu hỏi và chờ user trả lời (LangGraph `interrupt()`).
+#### Sub-Node `ask_question`
 
 ```
-Input:  current_question, current_round, current_index, max_questions
-Output: current_answer (sau khi user trả lời qua /interview/answer)
-
-Luồng:
+Xử lý:
   → Gọi interrupt({ current_index, total, round, question })
-  → Sub-graph dừng hoàn toàn tại đây
-  → FE gọi POST /interview/answer { answer }
-  → sub_graph.aupdate_state({ current_answer: answer }, as_node="ask_question")
-  → sub_graph.astream(None) resume từ save_and_next
+  → Sub-graph dừng hoàn toàn, chờ user gửi câu trả lời
+  → FE gọi POST /agent/interview/answer { answer }
+  → Sub-graph resume từ save_and_next với current_answer được set
+
+Output: current_answer (sau resume)
 ```
 
----
-
-#### Sub-Node 3 — `evaluate_and_next_node` (`save_and_next`)
-
-**Mục đích:** Lưu Q&A pair và tạo câu hỏi tiếp theo.
+#### Sub-Node `save_and_next`
 
 ```
-Input:  current_question, current_answer, current_index, qa_pairs (history)
-Output: qa_pairs += [new pair], current_question (câu tiếp), is_done
+Input:  current_question, current_answer, current_index, qa_pairs (history),
+        company_research.tech_stack
 
-Luồng:
-  1. Tạo QAPair { index, round, question, answer } — append vào qa_pairs
+Xử lý:
+  1. Tạo QAPair { index, round, question, answer } → append vào qa_pairs
   2. next_index = current_index + 1
   3. Nếu next_index >= max_questions (5):
        → is_done = true → route sang evaluate_all
-  4. Nếu chưa xong:
-       → Gọi Gemini với NEXT_QUESTION_PROMPT
-          context: lịch sử Q&A, tech_stack công ty, vị trí ứng tuyển
-       → Parse { question, round } → current_question/round tiếp theo
-       → is_done = false → route sang ask_question
+  4. Nếu chưa đủ câu:
+       → Gọi LLM với NEXT_QUESTION_PROMPT:
+           - Phân tích chất lượng câu trả lời trước
+           - Tốt → đào sâu hơn; Yếu → chuyển chủ đề
+           - Xoay vòng: technical → behavior → culture_fit
+       → is_done = false → route lại sang ask_question
 
-Rounds tự động: opening → technical → behavior → culture_fit → ...
+Output: qa_pairs (appended), current_question, current_round, is_done
+```
+
+#### Sub-Node `evaluate_all`
+
+```
+Input:  qa_pairs (5 cặp đầy đủ), cv_data, selected_job
+
+Xử lý:
+  1. Format toàn bộ Q&A thành text
+  2. Gọi LLM với EVALUATE_ALL_PROMPT (1 lần duy nhất):
+       → evaluated[]: { index, score(0-10), feedback, suggestion }
+       → summary: { total_score(0-100), level, overall_feedback,
+                    strengths[], weaknesses[], recommendation }
+  3. Merge score/feedback vào từng qa_pair
+  4. Cập nhật main AgentState: current_step="interview_done"
+
+Output: evaluated[], summary, current_step="interview_done"
+
+Levels: Tốt (≥80) | Khá (60-79) | Trung bình (40-59) | Yếu (<40)
 ```
 
 ---
 
-#### Sub-Node 4 — `evaluate_all_node`
+### Quản lý State
 
-**Mục đích:** Chấm điểm toàn bộ 5 câu hỏi trong 1 lần gọi LLM.
+| Nơi lưu | Lưu gì | Mục đích |
+|---|---|---|
+| **PostgresSaver** (LangGraph) | Toàn bộ `AgentState` + `InterviewState` | Nguồn sự thật duy nhất — cho phép resume chính xác sau crash |
+| **Redis** | `{ user_id, cv_id }` metadata | Kiểm tra session còn active (TTL 24h), tiến trình real-time |
+| **PostgreSQL** | `AgentSession`, `InterviewQAPair`, `CVDocument` | Lịch sử dài hạn, hiển thị history |
 
+---
+
+## 4. API Endpoints
+
+Base URL: `/api/v1`
+
+---
+
+### Auth — Xác thực
+
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| `POST` | `/auth/register` | Đăng ký tài khoản. Body: `{ email, password, full_name }` |
+| `POST` | `/auth/login` | Đăng nhập (form OAuth2). Trả về access token + refresh token |
+| `POST` | `/auth/refresh` | Làm mới access token. Body: `{ refresh_token }` |
+| `GET` | `/auth/me` | Lấy thông tin người dùng đang đăng nhập |
+| `GET` | `/auth/ping` | Health check endpoint |
+
+---
+
+### CV — Quản lý CV
+
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| `POST` | `/cv/upload` | Upload file CV (PDF/DOCX). Tự động trích xuất text, phân tích bằng LLM, phát hiện trùng lặp qua SHA-256 hash. Trả về `is_duplicate=true` nếu trùng |
+| `POST` | `/cv/duplicate/confirm` | Xác nhận hành động khi CV trùng. Body: `{ existing_cv_id, confirm: true|false }` — `true` = tái sử dụng CV cũ, `false` = tạo mới |
+
+---
+
+### Agent — Điều phối workflow AI
+
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| `POST` | `/agent/start` | Khởi tạo phiên làm việc mới với CV đã chọn. Inject initial state vào LangGraph checkpointer. Trả về `session_id`. Nếu đã có phiên trước với cùng CV thì `cached=true` |
+| `GET` | `/agent/run/{session_id}` | Kích hoạt chạy graph từ bước hiện tại trong background. Gọi sau `start` hoặc sau mỗi `resume` |
+| `GET` | `/agent/session/{session_id}` | Poll trạng thái phiên: `current_step`, danh sách job, nghiên cứu công ty, câu hỏi phỏng vấn hiện tại, tiến trình |
+| `POST` | `/agent/resume` | Tiếp tục workflow sau khi graph bị interrupt. Dùng cho HITL #1: `{ session_id, company_name, job_selected }` hoặc HITL #2: `{ session_id, is_interview: true\|false }` |
+
+**Luồng gọi agent chuẩn:**
 ```
-Input:  qa_pairs (5 cặp), cv_data, selected_job
-Output: evaluated [ QAEvaluated... ], summary
+POST /agent/start
+  → GET /agent/run/{id}
+  → polling GET /agent/session/{id}  (đến khi current_step = "jobs_found")
 
-Luồng:
-  1. Format toàn bộ Q&A thành văn bản
-  2. Gọi Gemini với EVALUATE_ALL_PROMPT
-     → Parse: evaluated [ { index, score(0-10), feedback, suggestion } ]
-              summary { total_score, level, overall_feedback, strengths,
-                        weaknesses, recommendation }
-  3. Tính total_score = avg(scores) * 10  (thang 100)
-  4. Merge score/feedback/suggestion vào từng qa_pair
-  5. Cập nhật main graph: current_step = "interview_done"
-     Lưu evaluated + summary vào AgentState
+POST /agent/resume { company_name }          ← HITL #1
+  → GET /agent/run/{id}
+  → polling GET /agent/session/{id}  (đến khi current_step = "companies_researched")
+
+POST /agent/resume { is_interview: true }    ← HITL #2
+  → GET /agent/run/{id}
+  → polling GET /agent/session/{id}  (đến khi current_step = "interviewing")
+
+POST /agent/interview/answer × 5            ← Vòng phỏng vấn
 ```
 
 ---
 
-## 4. Luồng chạy API chi tiết
+### Interview — Phỏng vấn
 
-### Bước 1 — Khởi tạo session
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| `POST` | `/agent/interview/answer` | Gửi câu trả lời cho câu hỏi hiện tại. Body: `{ session_id, answer }`. Trả về câu hỏi tiếp theo hoặc kết quả cuối nếu đã đủ 5 câu |
+| `GET` | `/agent/interview/result` | Lấy kết quả toàn bộ buổi phỏng vấn: điểm từng câu, tổng điểm, đánh giá tổng thể, gợi ý cải thiện |
 
-```
-POST /api/v1/agent/start
-Body: { "cv_id": "uuid", "refresh": false }
-
-AgentRepository.start_agent():
-  1. session_id = "agent_{user[:8]}_{cv[:8]}"
-  2. refresh=false → graph.aget_state()
-       → checkpoint tồn tại? → trả về { cached: true }
-  3. Tải cv_data từ PostgreSQL
-  4. graph.aupdate_state({ cv_data, cv_raw_text, current_step: "ready", ... })
-     ↳ GHI vào PostgresSaver — KHÔNG chạy graph
-  5. Redis.save_metadata(session_id, user_id, cv_id)  TTL=24h
-
-Response: { "session_id": "agent_abc_xyz", "current_step": "ready", "cached": false }
-```
-
----
-
-### Bước 2 — Stream: Tìm việc
-
-```
-GET /api/v1/agent/stream/{session_id}  [SSE]
-
-stream_graph_events():
-  1. Redis.get_metadata() → None? → error event
-  2. graph.aget_state() → state.next non-empty AND step in HITL? → restore event
-  3. graph.astream_events(None, config, version="v2"):
-
-     ┌─ on_chain_start [job_finder] ──────────────────► SSE: progress
-     │
-     ├─ on_chat_model_stream (Gemini tokens) ──────────► SSE: token × N
-     │
-     └─ on_chain_end [job_finder] ────────────────────► SSE: result
-
-  4. graph.aget_state() → state.next non-empty (interrupted)
-     current_step = "jobs_found"
-     ──────────────────────────────────────────────────► SSE: hitl
-                                                          { job_results: [...] }
-
-SSE events:
-  data: {"type":"progress","step":"job_finder","message":"Đang xử lý job_finder..."}
-  data: {"type":"token","content":"Backend"}
-  data: {"type":"token","content":" Developer"}
-  ...
-  data: {"type":"result","step":"job_finder","data":{"current_step":"jobs_found"}}
-  data: {"type":"hitl","step":"jobs_found","data":{"job_results":[...]}}
-```
-
----
-
-### Bước 3 — HITL #1: Chọn công ty
-
-```
-POST /api/v1/agent/resume
-Body: { "session_id": "agent_abc_xyz", "company_name": "FPT Software" }
-
-AgentRepository.resume_agent():
-  1. graph.aget_state() → current_step = "jobs_found"
-  2. Tìm job_selected trong job_results by company == "FPT Software"
-  3. graph.aupdate_state({
-       company_name: "FPT Software",
-       job_selected: { title, company, salary, ... },
-       current_step: "job_selected"
-     }, as_node="job_finder")
-     ↳ Cập nhật checkpoint, đặt con trỏ resume tại job_finder
-  4. KHÔNG chạy graph
-
-Response: { "session_id": "...", "current_step": "job_selected",
-            "message": "Kết nối SSE để tiếp tục" }
-```
-
----
-
-### Bước 4 — Stream: Research công ty
-
-```
-GET /api/v1/agent/stream/{session_id}  [SSE reconnect]
-
-  graph.aget_state() → state.next = ["company_researcher"] → tiếp tục
-  graph.astream_events(None, config):
-
-     ┌─ progress [company_researcher]
-     ├─ token × N  (Gemini research về FPT Software)
-     └─ result [company_researcher]
-
-  → interrupted (interrupt_after=["company_researcher"])
-  → hitl event: { company_research: { culture, tech_stack, ... } }
-```
-
----
-
-### Bước 5 — HITL #2: Chọn hành động
-
-```
-POST /api/v1/agent/resume
-Body: { "session_id": "...", "is_interview": true }
-
-  graph.aupdate_state({
-    is_interview: true,
-    current_step: "action_selected"
-  }, as_node="company_researcher")
-
-Response: { "current_step": "action_selected", "message": "Kết nối SSE để tiếp tục" }
-```
-
----
-
-### Bước 6 — Stream: Bắt đầu phỏng vấn
-
-```
-GET /api/v1/agent/stream/{session_id}  [SSE reconnect]
-
-  graph.astream_events(None, config):
-     └─ interviewer_node():
-          1. Khởi tạo InterviewState
-          2. interview_graph.astream(initial, interview_config)
-             → generate_first_question: Gemini tạo câu hỏi opening
-             → ask_question: interrupt() — sub-graph dừng
-          3. Trả về current_step = "interviewing"
-
-  → main graph kết thúc (state.next empty sau interviewer)
-  → hitl event: { current_question, current_round, current_index, max_questions }
-```
-
----
-
-### Bước 7 — Phỏng vấn (5 vòng)
-
-```
-POST /api/v1/agent/interview/answer
-Body: { "session_id": "...", "answer": "Câu trả lời..." }
-
-InterviewRepository.submit_answer():
-  1. sub_graph.aget_state() → current_index=0, max_questions=5
-  2. sub_graph.aupdate_state({ current_answer }, as_node="ask_question")
-  3. sub_graph.astream(None):
-       save_and_next:
-         - Tạo QAPair, append vào qa_pairs
-         - next_index < 5 → Gemini tạo câu hỏi tiếp
-         - ask_question: interrupt()
-  4. sub_graph.aget_state() → đọc state mới
-
-Response (chưa xong):
+**Response của `/interview/answer` (chưa xong):**
+```json
 {
-  "answered_index": 0, "total_questions": 5, "is_done": false,
-  "next_question": { "index": 1, "round": "technical",
-                     "question": "...", "is_last": false }
+  "answered_index": 1,
+  "total_questions": 5,
+  "is_done": false,
+  "next_question": {
+    "index": 2,
+    "round": "technical",
+    "question": "...",
+    "is_last": false
+  }
 }
+```
 
-─── Lặp lại 4 lần nữa ───
-
-Response (câu cuối, index=4):
-  save_and_next → is_done=true → evaluate_all:
-    - Gemini chấm điểm cả 5 câu 1 lần
-    - Tính total_score, level, feedback
-
-  main graph.aupdate_state({ current_step: "interview_done", evaluated, summary })
-
+**Response của `/interview/answer` (câu cuối):**
+```json
 {
-  "answered_index": 4, "total_questions": 5, "is_done": true,
-  "evaluated": [{ "index":0, "score":8, "feedback":"...", "suggestion":"..." }, ...],
-  "summary": { "total_score": 76, "level": "Khá", "overall_feedback": "...",
-               "strengths": [...], "weaknesses": [...], "recommendation": "..." }
+  "answered_index": 4,
+  "total_questions": 5,
+  "is_done": true,
+  "evaluated": [{ "index": 0, "score": 8, "feedback": "...", "suggestion": "..." }, ...],
+  "summary": {
+    "total_score": 76,
+    "level": "Khá",
+    "overall_feedback": "...",
+    "strengths": [...],
+    "weaknesses": [...],
+    "recommendation": "..."
+  }
 }
 ```
 
 ---
 
-### Restore sau F5
+### History — Lịch sử
 
-```
-GET /api/v1/agent/session/{session_id}
-
-AgentRepository.get_session_state():
-  1. Redis.get_metadata() → None → 404
-  2. graph.aget_state() → main state từ PostgresSaver
-  3. Nếu step in ("interviewing", "interview_done"):
-       interview_graph.aget_state() → merge dữ liệu phỏng vấn
-  4. Trả về toàn bộ state
-
-Response:
-{
-  "session_id": "...",
-  "current_step": "interviewing",
-  "job_results": [...],
-  "company_research": {...},
-  "selected_job": {...},
-  "current_question": "...",
-  "current_round": "technical",
-  "current_question_index": 2,
-  "max_questions": 5,
-  "interview_qa_pairs": [...]
-}
-```
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| `GET` | `/history/list` | Danh sách các phiên làm việc của người dùng, có phân trang và lọc theo trạng thái |
+| `GET` | `/history/id` | Lấy history theo `history_id` (query param) |
+| `GET` | `/history/{id}` | Chi tiết một phiên: job đã chọn, nghiên cứu công ty, kết quả phỏng vấn, flag `can_continue` |
+| `POST` | `/history/{id}/continue` | Tiếp tục một phiên đã bị gián đoạn trước đó |
 
 ---
 
-### Reconnect SSE tại HITL (restore event)
-
-```
-GET /api/v1/agent/stream/{session_id}
-
-stream_graph_events():
-  graph.aget_state() → state.next non-empty
-                     AND current_step in HITL_STEPS
-  → emit restore event (không chạy graph)
-
-data: {
-  "type": "restore",
-  "step": "jobs_found",
-  "state": { "job_results": [...], ... }
-}
-```
-
----
-
-## 5. API Endpoints
-
-### Agent
-
-| Method | Path | Mô tả |
-|--------|------|-------|
-| `POST` | `/api/v1/agent/start` | Tạo session, inject state vào PostgresSaver |
-| `GET`  | `/api/v1/agent/stream/{session_id}` | SSE — chạy graph, stream events |
-| `POST` | `/api/v1/agent/resume` | Inject HITL input (company_name / is_interview) |
-| `GET`  | `/api/v1/agent/session/{session_id}` | Restore state sau F5 |
-
-### Interview
-
-| Method | Path | Mô tả |
-|--------|------|-------|
-| `POST` | `/api/v1/agent/interview/answer` | Nộp câu trả lời phỏng vấn |
-| `GET`  | `/api/v1/agent/interview/result` | Lấy kết quả sau khi xong |
-| `GET`  | `/api/v1/agent/interview/history` | Danh sách lịch sử phỏng vấn |
-| `GET`  | `/api/v1/agent/interview/history/{id}` | Chi tiết 1 buổi phỏng vấn |
-
-### CV & Auth
-
-| Method | Path | Mô tả |
-|--------|------|-------|
-| `POST` | `/api/v1/cv/upload` | Upload & parse CV (PDF/DOC/DOCX) |
-| `POST` | `/api/v1/auth/register` | Đăng ký tài khoản |
-| `POST` | `/api/v1/auth/login` | Đăng nhập (access + refresh token) |
-| `POST` | `/api/v1/auth/refresh` | Làm mới access token |
-| `GET`  | `/api/v1/auth/me` | Thông tin user hiện tại |
-
-### SSE Event Types
-
-| Event | Fields | Ý nghĩa |
-|-------|--------|---------|
-| `progress` | `step`, `message` | Node bắt đầu chạy |
-| `token` | `content` | LLM stream token |
-| `result` | `step`, `data` | Node hoàn thành |
-| `hitl` | `step`, `message`, `data` | Graph dừng, cần input |
-| `restore` | `step`, `state` | Session đang ở HITL (F5 reconnect) |
-| `error` | `message` | Lỗi |
-| `done` | `step`, `message` | Graph chạy xong toàn bộ |
-
----
-
-## 6. Cài đặt & Chạy ứng dụng
+## 5. Cài đặt & Chạy
 
 ### Yêu cầu
 
-- Python 3.11+
+- Python 3.12+
 - PostgreSQL 14+
 - Redis 7+
-- (Tuỳ chọn) Ollama cho LLM local
+- Ollama (nếu dùng LLM local) hoặc Gemini API key
 
 ### Cấu hình `.env`
 
 ```env
-# App
-APP_NAME=career-agent
+APP_NAME=Career Agent API
 DEBUG=false
 
 # Database
@@ -652,11 +485,10 @@ DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/career_agent
 # Redis
 REDIS_URL=redis://localhost:6379
 
-# LLM — chọn "gemini" hoặc "ollama"
-LLM_PROVIDER=gemini
+# LLM Provider: gemini | ollama
+LLM_PROVIDER=ollama
 GEMINI_API_KEY=AIzaSy...
 GEMINI_MODEL=gemini-2.5-flash
-
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen2.5:latest
 
@@ -664,58 +496,40 @@ OLLAMA_MODEL=qwen2.5:latest
 TAVILY_API_KEY=tvly-...
 
 # Auth
-SECRET_KEY=your_super_secret_key_min_32_chars
+SECRET_KEY=your_secret_key_min_32_chars
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 REFRESH_TOKEN_EXPIRE_DAYS=7
 
-# File upload
+# File Upload
 MAX_UPLOAD_SIZE_MB=10
 UPLOAD_DIR=uploads
 ```
 
-### Cài đặt & chạy
+### Cài đặt và khởi chạy
 
 ```bash
 # Cài dependencies
 pip install -r requirements.txt
 
-# Chạy migration
+# Chạy database migration
 alembic upgrade head
 
 # Khởi động server
 uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Docs tự động: `http://localhost:8000/docs`
+Swagger UI tự động tại: `http://localhost:8000/docs`
 
----
-
-## 7. Database & Migration
-
-### Models chính
-
-| Table | Mô tả |
-|-------|-------|
-| `users` | Tài khoản người dùng |
-| `cv_documents` | CV đã upload & parse (JSON) |
-| `cv_usage_history` | Lịch sử sử dụng CV theo từng action |
-| `interview_history_items` | Kết quả phỏng vấn (score, Q&A, summary) |
-
-LangGraph tự tạo bảng `checkpoints`, `checkpoint_blobs`, `checkpoint_writes` khi khởi động.
-
-### Alembic
+### Alembic (Database Migration)
 
 ```bash
-# Tạo migration sau khi thay đổi models
+# Tạo migration mới
 alembic revision --autogenerate -m "mô tả thay đổi"
 
-# Chạy migration
+# Apply migration
 alembic upgrade head
 
 # Rollback 1 bước
 alembic downgrade -1
-
-# Xem lịch sử
-alembic history --verbose
 ```

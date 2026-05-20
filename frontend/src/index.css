@@ -17,6 +17,23 @@ body {
   min-height: 100vh;
 }
 
+/* ProgressTracker animations */
+@keyframes step-pulse {
+  0%, 100% { transform: scale(1);   opacity: 1;   }
+  50%       { transform: scale(1.2); opacity: 0.7; }
+}
+@keyframes dots-blink {
+  0%, 100% { opacity: 0.2; }
+  50%       { opacity: 1;   }
+}
+@keyframes msg-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+.step-icon-pulse { animation: step-pulse 1s ease-in-out infinite; }
+.dots-blink      { animation: dots-blink 1.5s ease-in-out infinite; }
+.msg-fade-in     { animation: msg-fade-in 0.3s ease-in; }
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

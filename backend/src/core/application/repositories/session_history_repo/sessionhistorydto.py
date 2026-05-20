@@ -15,11 +15,13 @@ class AgentSessionDto(BaseModel):
     is_interview: bool = False
     interview_score: Optional[int] = None
     interview_level: Optional[str] = None
+    interview_summary: Optional[dict] = None
 
 class InterviewQAPairDto(BaseModel):
     id: UUID
     session_id: str
     qa_index: int
+    round: Optional[str] = None
     question: str
     answer: Optional[str] = None
     score: Optional[int] = None

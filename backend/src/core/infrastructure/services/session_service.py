@@ -108,3 +108,38 @@ class SessionService(ISessionService):
         await self._redis.delete(
             self._progress_key(session_id)
         )
+
+    # ── Progress Step ─────────────────────────────────
+    @staticmethod
+    def _progress_step_key(session_id: str) -> str:
+        return f"agent_progress_step:{session_id}"
+
+    @override
+    async def set_progress_step(
+        self,
+        session_id: str,
+        step:       str,
+        ttl:        int = 300,
+    ) -> None:
+        await self._redis.setex(
+            self._progress_step_key(session_id),
+            ttl,
+            step,
+        )
+
+    @override
+    async def get_progress_step(
+        self, session_id: str
+    ) -> Optional[str]:
+        raw = await self._redis.get(
+            self._progress_step_key(session_id)
+        )
+        return raw if raw else None
+
+    @override
+    async def clear_progress_step(
+        self, session_id: str
+    ) -> None:
+        await self._redis.delete(
+            self._progress_step_key(session_id)
+        )

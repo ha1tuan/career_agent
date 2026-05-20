@@ -5,6 +5,7 @@ import { useAgentStore } from '../stores/agentStore';
 import { useAuthStore } from '../stores/authStore';
 import CVUpload from '../components/agent/CVUpload';
 import CVDuplicateDialog from '../components/agent/CVDuplicateDialog';
+import ProgressTracker from '../components/agent/ProgressTracker';
 
 export default function AgentPage() {
   const navigate = useNavigate();
@@ -14,6 +15,7 @@ export default function AgentPage() {
     runAndPoll, clearHitlEvent,
     sessionId, session,
     hitlEvent, sseStatus, streamMessage,
+    progressStep, progressMessage,
     loading, loadingStep, error,
     cvUploadStatus, existingCv,
   } = useAgentStore();
@@ -80,14 +82,20 @@ export default function AgentPage() {
   // Đang stream (AI đang tìm việc)
   if (sseStatus === 'connecting' || sseStatus === 'active') {
     return (
-      <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center gap-6 px-4">
-        <div className="w-14 h-14 rounded-full border-4 border-slate-700 border-t-indigo-500 animate-spin" />
-        <div className="text-center space-y-1">
-          <p className="text-base font-medium text-slate-200">
-            {streamMessage || loadingStep || 'AI đang xử lý...'}
-          </p>
-          <p className="text-sm text-slate-500">Đang tìm những vị trí phù hợp với CV của bạn</p>
-        </div>
+      <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center gap-8 px-6">
+        {sseStatus === 'active' ? (
+          <ProgressTracker
+            progressStep={progressStep}
+            progressMessage={progressMessage || (!progressStep ? 'Đang khởi động...' : '')}
+          />
+        ) : (
+          <>
+            <div className="w-14 h-14 rounded-full border-4 border-slate-700 border-t-indigo-500 animate-spin" />
+            <p className="text-base font-medium text-slate-200">
+              {streamMessage || loadingStep || 'AI đang xử lý...'}
+            </p>
+          </>
+        )}
       </div>
     );
   }

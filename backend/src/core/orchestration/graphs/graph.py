@@ -54,10 +54,14 @@ async def build_graph():
 # ── Singleton ─────────────────────────────────────
 _graph = None
 
-async def get_graph():
+async def init_graph():
     global _graph
     if _graph is None:
         print("🔧 Khởi tạo LangGraph...")
         _graph = await build_graph()
         print("✅ Graph ready")
+
+def get_graph():
+    if _graph is None:
+        raise RuntimeError("Graph chưa được khởi tạo — gọi init_graph() trong lifespan")
     return _graph

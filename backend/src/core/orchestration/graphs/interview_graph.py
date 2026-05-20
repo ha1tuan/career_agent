@@ -48,13 +48,16 @@ async def build_interview_graph():
     )
 
 
-_interview_graph    = None
-_interview_saver    = None
+_interview_graph = None
 
 
-async def get_interview_graph():
+async def init_interview_graph():
     global _interview_graph
     if _interview_graph is None:
         _interview_graph = await build_interview_graph()
         print("✅ Interview Sub-graph ready")
+
+def get_interview_graph():
+    if _interview_graph is None:
+        raise RuntimeError("Interview graph chưa được khởi tạo — gọi init_interview_graph() trong lifespan")
     return _interview_graph

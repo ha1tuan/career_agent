@@ -37,8 +37,9 @@ async def company_researcher_node(
         return {
             **state,
             "company_research": None,
-            "current_step":     "companies_researched",
+            "current_step":     "error",
             "error":            "Không có tên công ty để research",
+            "failed_node":      "company_researcher",
         }
 
     print(f"  🔍 Research: {company_name}")
@@ -69,8 +70,9 @@ async def company_researcher_node(
             return {
                 **state,
                 "company_research": None,
-                "current_step":     "companies_researched",
+                "current_step":     "error",
                 "error":            f"Không tìm thấy thông tin: {company_name}",
+                "failed_node":      "company_researcher",
             }
 
         # ── LLM extract CompanyResearch ───────────
@@ -96,8 +98,9 @@ async def company_researcher_node(
             return {
                 **state,
                 "company_research": None,
-                "current_step":     "companies_researched",
+                "current_step":     "error",
                 "error":            "Không parse được thông tin công ty",
+                "failed_node":      "company_researcher",
             }
 
         research["company_name"] = company_name
@@ -117,7 +120,7 @@ async def company_researcher_node(
         return {
             **state,
             "company_research": None,
-            "current_step":     "companies_researched",
+            "current_step":     "error",
             "error":            f"Lỗi: {str(e)}",
             "failed_node":      "company_researcher",
         }

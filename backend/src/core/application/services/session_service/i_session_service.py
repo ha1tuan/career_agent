@@ -67,3 +67,24 @@ class ISessionService(ABC):
         self, session_id: str
     ) -> None:
         ...
+
+    @abstractmethod
+    async def set_progress_step(
+        self,
+        session_id: str,
+        step:       str,
+        ttl:        int = 300,
+    ) -> None:
+        ...
+
+    @abstractmethod
+    async def get_progress_step(
+        self, session_id: str
+    ) -> Optional[str]:
+        ...
+
+    @abstractmethod
+    async def clear_progress_step(
+        self, session_id: str
+    ) -> None:
+        ...

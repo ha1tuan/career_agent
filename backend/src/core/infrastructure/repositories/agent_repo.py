@@ -85,9 +85,9 @@ class AgentRepository(IAgentRepository):
             "failed_node":  None,
         }
         # Khởi tạo graph và flow
-        graph  = await get_graph()
+        graph  = get_graph()
         config = self._config(session_id)
-        await graph.aupdate_state(config, initial_state)
+        await graph.aupdate_state(config, initial_state, as_node="__start__")
 
         # Insert hoặc reset DB
         if history:
@@ -162,7 +162,7 @@ class AgentRepository(IAgentRepository):
         if not history:
             raise ValueError("Session không tồn tại hoặc checkpoint trống")
         
-        graph  = await get_graph()
+        graph  = get_graph()
         config = self._config(req.session_id)
 
         state = await graph.aget_state(config)
@@ -249,7 +249,7 @@ class AgentRepository(IAgentRepository):
 
             print(
                 f"▶ HITL #2: {req.session_id} "
-                f"| action: {req.next_action}"
+                f"| is_interview: {req.is_interview}"
             )
             return ResumeAgentResponse(
                 session_id   = req.session_id,
@@ -271,7 +271,7 @@ class AgentRepository(IAgentRepository):
             raise ValueError("Session không tồn tại")
 
         # Đọc graph checkpoint
-        graph  = await get_graph()
+        graph  = get_graph()
         config = self._config(session_id)
         state  = await graph.aget_state(config)
 
@@ -291,11 +291,12 @@ class AgentRepository(IAgentRepository):
             interview_summary   = history.interview_summary or values.get("interview_summary"),
             error             = values.get("error"),
             progress          = await self.session_service.get_progress(session_id),
+            progress_step     = await self.session_service.get_progress_step(session_id),
         )
 
         # Đọc thêm interview sub-graph nếu đang phỏng vấn
         if current_step in ("interviewing", "interview_done"):
-            sub_graph  = await get_interview_graph()
+            sub_graph  = get_interview_graph()
             sub_config = self._interview_config(session_id)
             sub_state  = await sub_graph.aget_state(sub_config)
             if sub_state and sub_state.values:

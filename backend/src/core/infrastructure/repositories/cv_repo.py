@@ -62,6 +62,8 @@ class CVRepository(ICVRepository):
         
         # Clean và parse JSON
         cv_data = self._parse_llm_json(full_response)
+        print(f"DEBUG CV Parse Response: {full_response}")
+        print(f"DEBUG CV Data: {cv_data}")
 
         # Bước 5: Lưu file
         file_path = await self.service._save_file(cv_in.user_id, cv_in.file_bytes, cv_in.file_name, file_hash)   

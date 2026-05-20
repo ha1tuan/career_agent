@@ -103,8 +103,18 @@ const buildInterviewMessages = (qaHistory, currentQuestion, currentRound, curren
   return msgs;
 };
 
-// ─── Module-level poll timer (non-serializable, kept outside Zustand) ────────
+// ─── Module-level poll state (non-serializable, kept outside Zustand) ────────
 let pollTimer = null;
+let currentPollIntervalMs = 2000;
+
+const STOP_POLLING_STEPS = new Set([
+  'job_finder',
+  'companies_researched',
+  'interviewing',
+  'interview_done',
+  'error',
+  'done',
+]);
 
 // ─── Store ───────────────────────────────────────────────────────────────────
 
@@ -133,10 +143,12 @@ export const useAgentStore = create((set, get) => ({
   maxQuestions: 5,
   interviewResult: null,
 
-  // SSE
-  sseStatus: 'idle',   // 'idle' | 'connecting' | 'active' | 'closed'
+  // SSE / Polling
+  sseStatus: 'idle',      // 'idle' | 'connecting' | 'active' | 'closed'
   streamMessage: '',
-  hitlEvent: null,     // { step, data, isRestore? } — cleared by component after handling
+  hitlEvent: null,        // { step, data, isRestore? } — cleared by component after handling
+  progressStep: null,     // node đang chạy khi current_step = "running"
+  progressMessage: '',    // message chi tiết từ backend
 
   // CV duplicate detection
   cvUploadStatus: 'idle', // 'idle' | 'uploading' | 'duplicate' | 'success' | 'error'
@@ -151,61 +163,101 @@ export const useAgentStore = create((set, get) => ({
 
   startPolling: (sessionId) => {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    set({ sseStatus: 'active', streamMessage: '', hitlEvent: null, error: null });
+    currentPollIntervalMs = 2000;
+    set({ sseStatus: 'active', streamMessage: '', hitlEvent: null, error: null, progressStep: null, progressMessage: '' });
+
+    const scheduleNext = (ms) => {
+      pollTimer = setInterval(poll, ms);
+    };
 
     const poll = async () => {
       try {
         const data = await agentApi.getSession(sessionId);
         const state = data.state || data;
         const step = state.current_step;
+        const pStep = state.progress_step || null;
 
-        if (step === 'running') return; // tiếp tục poll
+        // Priority 1: Terminal/HITL step → stop polling, notify component
+        if (STOP_POLLING_STEPS.has(step)) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          currentPollIntervalMs = 2000;
 
-        clearInterval(pollTimer);
-        pollTimer = null;
+          const update = {
+            sseStatus: 'closed', streamMessage: '', currentStep: step,
+            progressStep: null, progressMessage: '',
+          };
 
-        const update = { sseStatus: 'closed', streamMessage: '', currentStep: step };
+          if (step === 'job_finder') {
+            update.jobListings = normalizeJobResults(state.job_results || []);
+          } else if (step === 'companies_researched') {
+            update.companyIntel = normalizeCompanyResearch(state.company_research);
+          } else if (step === 'interviewing') {
+            const qaHistory = state.interview_qa_pairs || [];
+            const question = state.current_question || null;
+            const round = state.current_round || null;
+            const index = state.current_question_index ?? 0;
+            const total = state.max_questions ?? 5;
+            update.interviewQaHistory = qaHistory;
+            update.currentQuestion = question;
+            update.currentRound = round;
+            update.currentQuestionIndex = index;
+            update.maxQuestions = total;
+            update.interviewMessages = buildInterviewMessages(qaHistory, question, round, index, total);
+          } else if (step === 'interview_done') {
+            try {
+              update.interviewResult = await agentApi.getInterviewResult(sessionId);
+            } catch (_) {}
+          } else if (step === 'error') {
+            update.error = state.error || 'Đã xảy ra lỗi';
+          }
 
-        if (step === 'job_finder') {
-          update.jobListings = normalizeJobResults(state.job_results || []);
-        } else if (step === 'companies_researched') {
-          update.companyIntel = normalizeCompanyResearch(state.company_research);
-        } else if (step === 'interviewing') {
-          const qaHistory = state.interview_qa_pairs || [];
-          const question = state.current_question || null;
-          const round = state.current_round || null;
-          const index = state.current_question_index ?? 0;
-          const total = state.max_questions ?? 5;
-          update.interviewQaHistory = qaHistory;
-          update.currentQuestion = question;
-          update.currentRound = round;
-          update.currentQuestionIndex = index;
-          update.maxQuestions = total;
-          update.interviewMessages = buildInterviewMessages(qaHistory, question, round, index, total);
-        } else if (step === 'interview_done') {
-          try {
-            update.interviewResult = await agentApi.getInterviewResult(sessionId);
-          } catch (_) {}
-        } else if (step === 'error') {
-          update.error = state.error || 'Đã xảy ra lỗi';
+          set({ ...update, hitlEvent: { step, data: state } });
+          return;
         }
 
-        set({ ...update, hitlEvent: { step, data: state } });
+        // Priority 2: Graph running (explicit or has progress) → update progress display
+        const isRunning = step === 'running' || pStep != null;
+        if (isRunning) {
+          set({
+            progressStep:    pStep,
+            progressMessage: state.progress || '',
+          });
+
+          if (state.should_stop_polling) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+            return;
+          }
+
+          const newMs = state.polling_interval_ms || 2000;
+          if (newMs !== currentPollIntervalMs) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+            currentPollIntervalMs = newMs;
+            scheduleNext(newMs);
+          }
+          return;
+        }
+
+        // Priority 3: Not running, not a stop step → keep polling (ready, job_selected, etc.)
       } catch (err) {
         clearInterval(pollTimer);
         pollTimer = null;
+        currentPollIntervalMs = 2000;
         const message = err.response?.data?.detail || err.message;
         set({ sseStatus: 'idle', error: message });
       }
     };
 
     poll();
-    pollTimer = setInterval(poll, 2000);
+    scheduleNext(currentPollIntervalMs);
   },
 
   stopPolling: () => {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    set({ sseStatus: 'idle', streamMessage: '' });
+    currentPollIntervalMs = 2000;
+    set({ sseStatus: 'idle', streamMessage: '', progressStep: null, progressMessage: '' });
   },
 
   // Trigger graph chạy nền rồi bắt đầu poll (dùng sau POST /agent/start)
@@ -490,6 +542,7 @@ export const useAgentStore = create((set, get) => ({
 
   reset: () => {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    currentPollIntervalMs = 2000;
     localStorage.removeItem('career_session_id');
     set({
       sessionId: null,
@@ -511,6 +564,8 @@ export const useAgentStore = create((set, get) => ({
       sseStatus: 'idle',
       streamMessage: '',
       hitlEvent: null,
+      progressStep: null,
+      progressMessage: '',
       loading: false,
       loadingStep: '',
       error: null,

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, override
 from uuid import UUID
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.application.repositories.session_history_repo.ISessionHistoryRepository import ISessionHistoryRepository
@@ -179,6 +179,21 @@ class SessionHistoryRepository(ISessionHistoryRepository):
             .limit(page_size)
         )
         return [AgentSessionDto.model_validate(row, from_attributes=True) for row in result.scalars().all()]
+
+    @override
+    async def count_history(self, user_id: UUID) -> int:
+        result = await self.session.execute(
+            select(func.count(AgentSession.id))
+            .where(AgentSession.user_id == user_id)
+        )
+        return result.scalar_one()
+
+    @override
+    async def get_by_id(self, id: UUID) -> AgentSession | None:
+        result = await self.session.execute(
+            select(AgentSession).where(AgentSession.id == id)
+        )
+        return result.scalar_one_or_none()
 
     @override
     async def get_qa_pairs(

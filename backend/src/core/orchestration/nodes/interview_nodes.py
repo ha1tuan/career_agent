@@ -1,4 +1,3 @@
-import json
 from langgraph.types import interrupt
 
 from src.core.orchestration.state import InterviewState, QAPair, QAEvaluated, AgentState
@@ -9,8 +8,6 @@ from src.core.orchestration.prompts.interview_prompt import (
 )
 from src.core.orchestration.utils.utils import _parse_json
 from src.core.infrastructure.services.llm_service import get_llm_service
-from src.core.infrastructure.persistence.session import AsyncSessionFactory
-from src.core.domain.models import InterviewHistoryItem
 
 # ── Node 1: Câu hỏi đầu tiên ─────────────────────
 async def generate_first_question_node(
@@ -291,7 +288,7 @@ async def interviewer_node(state: AgentState) -> AgentState:
     print(f"🎤 [Interviewer] Khởi động interview subgraph | session={session_id}")
 
     try:
-        sub_graph = await get_interview_graph()
+        sub_graph = get_interview_graph()
         config    = {"configurable": {"thread_id": f"{session_id}_interview"}}
 
         interview_initial: InterviewState = {

@@ -6,6 +6,7 @@ import CVProfile from '../components/agent/CVProfile';
 import JobCard from '../components/agent/JobCard';
 import Button from '../components/ui/Button';
 import { useSessionRecovery } from '../hooks/useSessionRecovery';
+import ProgressTracker from '../components/agent/ProgressTracker';
 
 export default function JobSelectionPage() {
   const navigate = useNavigate();
@@ -14,6 +15,7 @@ export default function JobSelectionPage() {
     resumeWithCompany, setSelectedJob, startPolling, clearHitlEvent,
     sessionId, session,
     hitlEvent, sseStatus, streamMessage,
+    progressStep, progressMessage,
     loading,
   } = useAgentStore();
 
@@ -50,14 +52,20 @@ export default function JobSelectionPage() {
   // Đang stream (AI đang research công ty)
   if (sseStatus === 'connecting' || sseStatus === 'active') {
     return (
-      <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center gap-6">
-        <div className="w-14 h-14 rounded-full border-4 border-slate-700 border-t-indigo-500 animate-spin" />
-        <div className="text-center space-y-1">
-          <p className="text-base font-medium text-slate-200">
-            {streamMessage || 'Đang research công ty...'}
-          </p>
-          <p className="text-sm text-slate-500">AI đang thu thập thông tin chi tiết về công ty</p>
-        </div>
+      <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center gap-8 px-6">
+        {sseStatus === 'active' ? (
+          <ProgressTracker
+            progressStep={progressStep}
+            progressMessage={progressMessage || (!progressStep ? 'Đang khởi động...' : '')}
+          />
+        ) : (
+          <>
+            <div className="w-14 h-14 rounded-full border-4 border-slate-700 border-t-indigo-500 animate-spin" />
+            <p className="text-base font-medium text-slate-200">
+              {streamMessage || 'Đang research công ty...'}
+            </p>
+          </>
+        )}
       </div>
     );
   }

@@ -108,7 +108,7 @@ class InterviewRepository(IInterviewRepository):
     @override
     async def submit_answer(self, req: AnswerRequest) -> SubmitAnswerResponse:
         try:
-            sub_graph = await get_interview_graph()
+            sub_graph = get_interview_graph()
             config    = self._sub_config(req.session_id)
             # Lấy history job selected
             history = await self.session_history_repo.get_by_session_id(req.session_id)
@@ -136,17 +136,30 @@ class InterviewRepository(IInterviewRepository):
             )
 
             # ── 3. Resume sub-graph với answer ────────────
-            await sub_graph.update_state(
+            await sub_graph.aupdate_state(
                 config,
                 {"current_answer": req.answer},
                 as_node = "ask_question",
             )
+
+            # DEBUG: kiểm tra next sau update_state
+            checkpoint_after = await sub_graph.aget_state(config)
+            print(f"DEBUG next after update: {checkpoint_after.next}")
+
             final = {}
             async for event in sub_graph.astream(None, config):
                 for node_name, node_state in event.items():
-                    if isinstance(node_state, dict):
-                        final = {**final, **node_state}
                     print(f"  ✓ [sub:{node_name}]")
+                    if isinstance(node_state, dict):
+                        print(f"     keys: {list(node_state.keys())}")
+                        final = {**final, **node_state}
+
+            # DEBUG: kiểm tra final state
+            print(f"DEBUG final keys: {list(final.keys())}")
+            print(f"DEBUG final.is_done: {final.get('is_done')}")
+            print(f"DEBUG final.current_index: {final.get('current_index')}")
+            print(f"DEBUG final.current_question: {str(final.get('current_question',''))[:80]}")
+
             is_done    = final.get("is_done", False)
             next_index = final.get("current_index", 0)
 
@@ -281,3 +294,51 @@ class InterviewRepository(IInterviewRepository):
 
         except Exception as exc:
             return InterviewResultResponse(session_id=session_id, error=str(exc))
+
+    # ── get_history ───────────────────────────────────────────────────────────
+
+    @override
+    async def get_history(self) -> list:
+        result = await self.db.execute(
+            select(InterviewHistoryItem)
+            .where(InterviewHistoryItem.user_id == self.current_user.id)
+            .order_by(InterviewHistoryItem.created_at.desc())
+        )
+        rows = result.scalars().all()
+        return [
+            {
+                "record_id":    str(row.id),
+                "session_id":   row.session_id,
+                "job_title":    row.job_title    or "",
+                "company_name": row.company_name or "",
+                "total_score":  int(row.total_score) if row.total_score else None,
+                "level":        row.level,
+                "created_at":   row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+
+    # ── get_history_detail ────────────────────────────────────────────────────
+
+    @override
+    async def get_history_detail(self, record_id: UUID) -> dict:
+        result = await self.db.execute(
+            select(InterviewHistoryItem).where(
+                InterviewHistoryItem.id      == record_id,
+                InterviewHistoryItem.user_id == self.current_user.id,
+            )
+        )
+        row = result.scalar_one_or_none()
+        if not row:
+            raise ValueError(f"Không tìm thấy lịch sử phỏng vấn: {record_id}")
+        return {
+            "record_id":    str(row.id),
+            "session_id":   row.session_id,
+            "job_title":    row.job_title    or "",
+            "company_name": row.company_name or "",
+            "total_score":  int(row.total_score) if row.total_score else None,
+            "level":        row.level,
+            "summary":      row.summary,
+            "qa_history":   row.qa_history,
+            "created_at":   row.created_at.isoformat() if row.created_at else None,
+        }

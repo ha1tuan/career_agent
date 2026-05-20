@@ -23,6 +23,7 @@ class GeminiLLMService(ILLMService):
             google_api_key=settings.GEMINI_API_KEY,
             temperature=temperature,
             streaming=True,
+            response_mime_type="application/json",
         )
 
     async def generate(self, prompt: str) -> str:

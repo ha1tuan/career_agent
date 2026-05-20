@@ -48,6 +48,14 @@ class ISessionHistoryRepository(ABC):
         pass
 
     @abstractmethod
+    async def count_history(self, user_id: UUID) -> int:
+        pass
+
+    @abstractmethod
+    async def get_by_id(self, id: UUID) -> AgentSession | None:
+        pass
+
+    @abstractmethod
     async def get_qa_pairs(
         self, session_id: str
     ) -> list[InterviewQAPairDto]:
