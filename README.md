@@ -561,6 +561,8 @@ Dưới đây là danh sách các lệnh thiết yếu để bạn giám sát v�
 docker compose down
 ```
 
+1
+
 ### 3. Khởi động lại hệ thống nhanh chóng
 
 Nếu bạn có thay đổi cấu hình nhỏ và muốn khởi động lại nhanh:
