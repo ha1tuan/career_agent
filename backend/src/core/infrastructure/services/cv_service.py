@@ -78,8 +78,9 @@ class CVService(ICVService):
                 f"Chỉ chấp nhận: {', '.join(extractors.keys())}"
             )
 
-        # ĐÃ SỬA: Sửa lại thụt lề (indentation) dòng return này cho đúng
-        return extractor(file_bytes)
+        # Fix: Loại bỏ ký tự null byte (\x00) thường có trong file PDF gây lỗi DB
+        extracted_text = extractor(file_bytes)
+        return extracted_text.replace("\x00", "")
 
     @staticmethod
     def extract_text_from_pdf(file_bytes: bytes) -> str:

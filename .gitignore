@@ -1,0 +1,14 @@
+# Bỏ qua toàn bộ thư mục node_modules và build
+node_modules/
+dist/
+build/
+
+# Bỏ qua các file cấu hình môi trường hoặc file cá nhân
+.env
+.DS_Store
+*.secret
+
+# Bỏ qua file nhật ký của IDE/Editor
+.vscode/
+.idea/
+

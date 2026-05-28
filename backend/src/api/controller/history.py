@@ -108,6 +108,20 @@ async def continue_agent(
             "hint":         "Session đã hoàn thành",
         }
 
+    if history.current_step == "job_finder" and not history.selected_job:
+        return {
+            "error":        "Vui lòng chọn việc làm trước khi tiếp tục",
+            "current_step": history.current_step,
+            "hint":         "Gọi endpoint chọn job để chọn công việc",
+        }
+
+    if history.current_step == "companies_researched":
+        return {
+            "error":        "Vui lòng chọn hành động trước khi tiếp tục",
+            "current_step": history.current_step,
+            "hint":         "Gọi endpoint chọn action (interview hoặc kết thúc)",
+        }
+
     background_tasks.add_task(
         GraphRunner.run,
         session_id = history.session_id,

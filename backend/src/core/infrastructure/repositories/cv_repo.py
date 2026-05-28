@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.application.repositories.cv_repo.ICVRepository import ICVRepository
 from src.core.application.repositories.cv_repo.cvdtos import CVCreate, CVDto
 from typing import Optional
-from src.api.config.exceptions import ValidationException, NotFoundException, CVDuplicateException
+from src.api.config.exceptions import ValidationException, NotFoundException, CVDuplicateException, LLMUnavailableException
 from src.api.config.settings import get_settings
 from src.core.orchestration.prompts.parser_prompt import CV_PARSER_PROMPT
 from src.core.application.services.llm_service.i_llm_service import ILLMService
@@ -57,8 +57,14 @@ class CVRepository(ICVRepository):
         prompt        = CV_PARSER_PROMPT.format(cv_text=raw_text)
         full_response = ""
 
-        async for token in self.llm.stream(prompt):
-            full_response += token
+        try:
+            async for token in self.llm.stream(prompt):
+                full_response += token
+        except Exception as e:
+            from google.genai.errors import ServerError
+            if isinstance(e, ServerError) and e.status_code == 503:
+                raise LLMUnavailableException()
+            raise
         
         # Clean và parse JSON
         cv_data = self._parse_llm_json(full_response)

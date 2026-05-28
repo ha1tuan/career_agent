@@ -26,3 +26,11 @@ class CVDuplicateException(CareerAgentException):
     def __init__(self, existing_cv):
         self.existing_cv = existing_cv
         super().__init__(message="CV đã tồn tại", status_code=409)
+
+
+class LLMUnavailableException(CareerAgentException):
+    def __init__(self):
+        super().__init__(
+            message="Dịch vụ AI đang quá tải, vui lòng thử lại sau vài phút.",
+            status_code=503,
+        )

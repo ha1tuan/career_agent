@@ -1,5 +1,6 @@
 from src.core.orchestration.session.session_events import SessionEvent
 from src.core.orchestration.session.session_events import event_company_researched
+from src.core.orchestration.session.session_events import event_graph_error
 from src.core.orchestration.session.session_events import event_interview_started
 from src.core.orchestration.session.session_events import event_jobs_found
 
@@ -23,6 +24,8 @@ def _build_session_event(
             return event_company_researched(
                 session_id, company
             )
+        if output.get("error"):
+            return event_graph_error(session_id)
 
     elif node_name == "interviewer":
         return event_interview_started(session_id)
