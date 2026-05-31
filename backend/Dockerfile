@@ -9,17 +9,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Thiết lập thư mục làm việc trong container
 WORKDIR /app
 
-# Cài đặt các gói hệ thống cần thiết (nếu có package Python yêu cầu biên dịch C)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 # Sao chép tệp requirements.txt trước để tận dụng Docker Layer Cache
 COPY requirements.txt .
 
-# Nâng cấp pip và cài đặt dependencies mà không lưu cache
+# Cài đặt dependencies từ pre-built wheels (không cần compiler)
 RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --only-binary=:all: -r requirements.txt || \
     pip install --no-cache-dir -r requirements.txt
 
 # Sao chép toàn bộ mã nguồn backend vào container
