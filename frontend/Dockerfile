@@ -15,6 +15,10 @@ RUN npm ci
 # Sao chép toàn bộ mã nguồn frontend vào container
 COPY . .
 
+# Nhận API URL từ docker-compose build args
+ARG VITE_API_URL
+ENV VITE_API_URL=$VITE_API_URL
+
 # Thực hiện build ứng dụng React (Vite) thành mã tĩnh (HTML, CSS, JS)
 RUN npm run build
 

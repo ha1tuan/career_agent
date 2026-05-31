@@ -68,6 +68,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://54.87.169.221:8000
     container_name: career_frontend
     ports:
       - "3000:80" # Ánh xạ cổng 3000 của Host vào cổng 80 của Nginx (Stage 2)
