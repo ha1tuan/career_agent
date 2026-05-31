@@ -7,7 +7,7 @@ services:
     container_name: career_db
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=100903 # Hãy thay đổi mật khẩu mạnh hơn khi deploy thực tế
+      - POSTGRES_PASSWORD=Career@AWS#2024!   # TODO: đổi thành mật khẩu riêng của bạn
       - POSTGRES_DB=career_db
     volumes:
       # Ánh xạ tên volume để lưu trữ dữ liệu vĩnh viễn (tránh mất mát khi container restart/stop)
@@ -47,7 +47,7 @@ services:
       - ./backend/uploads:/app/uploads # Lưu trữ CV tải lên từ Host
     environment:
       # URL kết nối DB nội bộ sử dụng tên service "db" trong mạng Docker
-      - DATABASE_URL=postgresql+asyncpg://postgres:100903@db:5432/career_db
+      - DATABASE_URL=postgresql+asyncpg://postgres:Career@AWS#2024!@db:5432/career_db
       # URL kết nối Redis nội bộ sử dụng tên service "redis" trong mạng Docker
       - REDIS_URL=redis://redis:6379
     env_file:
